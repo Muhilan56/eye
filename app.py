@@ -53,7 +53,7 @@ def calculate_pressure(length, density):
 
 def get_pressure_warning(pressure):
     # Check for high blood pressure
-    if pressure["systolic"] >= 140 or pressure["diastolic"] >= 90:
+    if pressure["systolic"] > 140 or pressure["diastolic"] > 90:
         return "High Pressure", "danger"
     # Check for low blood pressure
     elif pressure["systolic"] < 90 or pressure["diastolic"] < 60:
