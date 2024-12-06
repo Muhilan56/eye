@@ -51,14 +51,17 @@ def calculate_pressure(length, density):
         "diastolic": round(diastolic_pressure, 2)
     }
 
-# Function to provide warnings based on pressure
 def get_pressure_warning(pressure):
-    if pressure["systolic"] > 120:
+    # Check for high blood pressure
+    if pressure["systolic"] >= 140 or pressure["diastolic"] >= 90:
         return "High Pressure", "danger"
-    elif pressure["systolic"] < 90:
+    # Check for low blood pressure
+    elif pressure["systolic"] < 90 or pressure["diastolic"] < 60:
         return "Low Pressure", "warning"
+    # Otherwise, normal pressure
     else:
         return "Normal Pressure", "success"
+
 
 @app.route('/')
 def home():
