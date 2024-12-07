@@ -1,8 +1,10 @@
 import base64
 import cv2
 import numpy as np
+import logging
 from flask import Flask, jsonify, redirect, render_template, Response, request, url_for
 import os
+import threading
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -13,6 +15,9 @@ os.makedirs(os.path.join('static', 'images'), exist_ok=True)
 # Load the pre-trained Haar Cascade for eye detection
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
 
 def detect_eye(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -45,32 +50,30 @@ def process_image(image):
 
 # Function to calculate pressure
 def calculate_pressure(length, density):
-    systolic_min = 90
-    systolic_max = 140
-    diastolic_min = 60
-    diastolic_max = 90
-    original_min = 50
-    original_max = 200
+    # Define the original pressure range and the desired range
+    original_min = 70
+    original_max = 120
+    desired_min = 10
+    desired_max = 21
 
-    original_pressure = (0.6 * length * density) / 10
-    systolic_pressure = systolic_min + (original_pressure - original_min) * \
-                        (systolic_max - systolic_min) / (original_max - original_min)
-    diastolic_pressure = diastolic_min + (original_pressure - original_min) * \
-                         (diastolic_max - diastolic_min) / (original_max - original_min)
+    # Calculate the original pressure using the previous formula
+    original_pressure = (0.5 * length * density) / 10
+    logging.debug(f"Original Pressure: {original_pressure}")
 
-    systolic_pressure = max(min(systolic_pressure, systolic_max), systolic_min)
-    diastolic_pressure = max(min(diastolic_pressure, diastolic_max), diastolic_min)
+    # Scale the original pressure to the desired range using linear transformation
+    pressure = desired_min + (original_pressure - original_min) * (desired_max - desired_min) / (original_max - original_min)
+    logging.debug(f"Scaled Pressure: {pressure}")
 
-    return {
-        "systolic": round(systolic_pressure, 2),
-        "diastolic": round(diastolic_pressure, 2)
-    }
+    # Ensure the pressure stays within the desired range (clipping)
+    pressure = max(min(pressure, desired_max), desired_min)
+
+    return round(pressure, 2)
 
 # Function to provide warnings based on pressure
 def get_pressure_warning(pressure):
-    if pressure["systolic"] > 120:
+    if pressure > 18:
         return "High Pressure", "danger"
-    elif pressure["systolic"] < 90:
+    elif pressure < 12:
         return "Low Pressure", "warning"
     else:
         return "Normal Pressure", "success"
@@ -95,16 +98,20 @@ def generate_frames():
     camera = cv2.VideoCapture(0)
     if not camera.isOpened():
         return "Error: Camera could not be opened"
-    while True:
-        ret, frame = camera.read()
-        if not ret:
-            break
-        ret, buffer = cv2.imencode('.jpg', frame)
-        frame = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n\r\n')
-    camera.release()
-
+    
+    def capture():
+        while True:
+            ret, frame = camera.read()
+            if not ret:
+                break
+            ret, buffer = cv2.imencode('.jpg', frame)
+            frame = buffer.tobytes()
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n\r\n')
+    
+    # Start capturing in a separate thread to avoid blocking
+    thread = threading.Thread(target=capture)
+    thread.start()
 
 @app.route('/capture', methods=['POST'])
 def capture_and_process():
@@ -142,6 +149,17 @@ def capture_and_process():
 
         vessel_length = np.sum(processed_image > 0)
         vessel_density = vessel_length / processed_image.size
+        logging.debug(f"Vessel Length: {vessel_length}")
+        logging.debug(f"Vessel Density: {vessel_density}")
+        
+        if vessel_length == 0 or vessel_density == 0:
+            return jsonify({
+                'pressure': None,
+                'message': "Error: Vessel length or density calculation is zero. Image may not contain sufficient data.",
+                'alert_type': "danger",
+                'image_path': None
+            })
+
         estimated_pressure = calculate_pressure(vessel_length, vessel_density)
         message, alert_type = get_pressure_warning(estimated_pressure)
 
@@ -153,12 +171,14 @@ def capture_and_process():
         })
 
     except Exception as e:
+        logging.error(f"Error processing image: {str(e)}")
         return jsonify({
             'pressure': None,
-            'message': f"Error processing image: {str(e)}",
+            'message': f"An unexpected error occurred: {str(e)}",
             'alert_type': "danger",
             'image_path': None
         })
+
 @app.route('/stop')
 def stop_camera():
     cv2.destroyAllWindows()
