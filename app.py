@@ -11,13 +11,28 @@ app = Flask(__name__)
 os.makedirs(os.path.join('static', 'images'), exist_ok=True)
 
 # Load the pre-trained Haar Cascade for eye detection
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
 
-# Function to detect eyes
 def detect_eye(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    eyes = eye_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-    return len(eyes) > 0  # Return True if at least one eye is detected
+    
+    # Detect faces in the image
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    
+    for (x, y, w, h) in faces:
+        # Crop face region
+        face_region = gray[y:y+h, x:x+w]
+        
+        # Detect eyes within the face region
+        eyes = eye_cascade.detectMultiScale(face_region)
+        
+        # If at least one eye is detected, return True
+        if len(eyes) > 0:
+            return True
+    
+    # If no eyes detected
+    return False
 
 # Function to process the image
 def process_image(image):
@@ -51,17 +66,14 @@ def calculate_pressure(length, density):
         "diastolic": round(diastolic_pressure, 2)
     }
 
+# Function to provide warnings based on pressure
 def get_pressure_warning(pressure):
-    # Check for high blood pressure
-    if pressure["systolic"] > 140 or pressure["diastolic"] > 90:
+    if pressure["systolic"] > 120:
         return "High Pressure", "danger"
-    # Check for low blood pressure
-    elif pressure["systolic"] < 90 or pressure["diastolic"] < 60:
+    elif pressure["systolic"] < 90:
         return "Low Pressure", "warning"
-    # Otherwise, normal pressure
     else:
         return "Normal Pressure", "success"
-
 
 @app.route('/')
 def home():
@@ -93,20 +105,33 @@ def generate_frames():
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n\r\n')
     camera.release()
 
+
 @app.route('/capture', methods=['POST'])
 def capture_and_process():
     try:
         data = request.get_json()
         img_data = data['image']
+
+        # Check if the image data starts with the correct prefix
+        if not img_data.startswith('data:image/jpeg;base64,'):
+            return jsonify({
+                'pressure': None,
+                'message': "Invalid image format. Please upload a valid JPEG image.",
+                'alert_type': "warning",
+                'image_path': None
+            })
+
+        # Extract the base64 part of the image data (after the prefix)
         img_data = img_data.split(',')[1]
         img_bytes = base64.b64decode(img_data)
         img_array = np.frombuffer(img_bytes, dtype=np.uint8)
         image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
+        # Ensure eye detection is successful (no full face accepted)
         if not detect_eye(image):
             return jsonify({
                 'pressure': None,
-                'message': "No eye detected in the image.",
+                'message': "No eye detected or image contains full face. Please upload an eye-focused image.",
                 'alert_type': "warning",
                 'image_path': None
             })
@@ -134,7 +159,6 @@ def capture_and_process():
             'alert_type': "danger",
             'image_path': None
         })
-
 @app.route('/stop')
 def stop_camera():
     cv2.destroyAllWindows()
